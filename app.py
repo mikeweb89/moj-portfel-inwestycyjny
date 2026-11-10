@@ -8,24 +8,24 @@ import datetime
 
 # --- Constants ---
 DATA_FILE = "portfolio.json"
-ACCOUNTS = ["Emerytura (IKE/IKZE)", "Poduszka Finansowa", "Obligacje", "Giełda"]
 
 # --- Data Handling ---
 def load_data():
-    """Loads portfolio data from JSON or returns default structure."""
+    """Loads portfolio data from JSON. Missing or empty file yields an empty dict."""
     if not os.path.exists(DATA_FILE):
-        return {acc: {"invested": 0.0, "value": 0.0} for acc in ACCOUNTS}
-    
+        return {}
+
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # Ensure all accounts exist (migration support if we add accounts later)
-            for acc in ACCOUNTS:
-                if acc not in data:
-                    data[acc] = {"invested": 0.0, "value": 0.0}
+            raw = f.read().strip()
+            if not raw:
+                return {}
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return {}
             return data
     except (json.JSONDecodeError, IOError):
-         return {acc: {"invested": 0.0, "value": 0.0} for acc in ACCOUNTS}
+        return {}
 
 def save_data(data):
     """Saves portfolio data to JSON."""
@@ -33,33 +33,34 @@ def save_data(data):
         json.dump(data, f, indent=4)
 
 # --- Simulation Logic ---
-def calculate_forecast(current_total_value, years=20, annual_return=0.07, monthly_contribution=1000):
+def calculate_forecast(current_total_value, current_invested_value, years=20, annual_return=0.07, monthly_contribution=1000):
     """
-    Calculates future portfolio value based on:
-    - current_total_value: Starting amount
-    - years: Duration of simulation
-    - annual_return: 7% default
-    - monthly_contribution: 1000 PLN default
+    Calculates future portfolio value split by Invested vs Interest.
     """
     months = years * 12
     monthly_return = annual_return / 12
     
     forecast_dates = []
-    forecast_values = []
+    forecast_total = []
+    forecast_invested = []
     
     current_val = current_total_value
+    current_inv = current_invested_value
+    
     start_date = datetime.date.today()
     
     for i in range(months + 1):
         # Date for x-axis
         date = start_date + datetime.timedelta(days=30*i) # Approx month
         forecast_dates.append(date)
-        forecast_values.append(current_val)
+        forecast_total.append(current_val)
+        forecast_invested.append(current_inv)
         
         # Apply growth and contribution for next month
         current_val = current_val * (1 + monthly_return) + monthly_contribution
+        current_inv = current_inv + monthly_contribution
         
-    return forecast_dates, forecast_values
+    return forecast_dates, forecast_total, forecast_invested
 
 # --- Main App ---
 def main():
@@ -70,25 +71,45 @@ def main():
 
     # --- Sidebar: Operations ---
     st.sidebar.header("Operacje na portfelu")
-    
-    selected_account = st.sidebar.selectbox("Wybierz konto", ACCOUNTS)
-    operation_type = st.sidebar.radio("Typ operacji", ["Wpłata", "Korekta Wyceny"])
-    amount = st.sidebar.number_input("Kwota (PLN)", min_value=0.0, step=10.0, format="%.2f")
-    
-    if st.sidebar.button("Zatwierdź"):
-        if amount > 0 or operation_type == "Korekta Wyceny": # Allow 0 for correction? Maybe not necessary, but safe check.
-            if operation_type == "Wpłata":
-                portfolio_data[selected_account]["invested"] += amount
-                portfolio_data[selected_account]["value"] += amount
-                st.sidebar.success(f"Wpłacono {amount:,.2f} PLN na {selected_account}")
-            elif operation_type == "Korekta Wyceny":
-                # Only update 'value', leave 'invested' alone
-                old_val = portfolio_data[selected_account]["value"]
-                portfolio_data[selected_account]["value"] = amount
-                st.sidebar.info(f"Zaktualizowano wycenę {selected_account}: {old_val:,.2f} -> {amount:,.2f} PLN")
-            
+
+    account_names = list(portfolio_data.keys())
+    if account_names:
+        selected_account = st.sidebar.selectbox("Wybierz konto", account_names)
+        operation_type = st.sidebar.radio("Typ operacji", ["Wpłata", "Korekta Wyceny"])
+        amount = st.sidebar.number_input("Kwota (PLN)", min_value=0.0, step=10.0, format="%.2f")
+
+        if st.sidebar.button("Zatwierdź"):
+            if amount > 0 or operation_type == "Korekta Wyceny":
+                if operation_type == "Wpłata":
+                    portfolio_data[selected_account]["invested"] += amount
+                    portfolio_data[selected_account]["value"] += amount
+                    st.sidebar.success(f"Wpłacono {amount:,.2f} PLN na {selected_account}")
+                elif operation_type == "Korekta Wyceny":
+                    old_val = portfolio_data[selected_account]["value"]
+                    portfolio_data[selected_account]["value"] = amount
+                    st.sidebar.info(
+                        f"Zaktualizowano wycenę {selected_account}: {old_val:,.2f} -> {amount:,.2f} PLN"
+                    )
+
+                save_data(portfolio_data)
+                st.rerun()
+    else:
+        st.sidebar.info("Brak kont. Dodaj pierwsze konto poniżej.")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Nowe konto")
+    new_account_name = st.sidebar.text_input("Nazwa nowego konta")
+
+    if st.sidebar.button("Dodaj konto"):
+        name = new_account_name.strip()
+        if not name:
+            st.sidebar.error("Nazwa konta nie może być pusta.")
+        elif name in portfolio_data:
+            st.sidebar.warning(f"Konto „{name}” już istnieje.")
+        else:
+            portfolio_data[name] = {"invested": 0.0, "value": 0.0}
             save_data(portfolio_data)
-            st.rerun() # Refresh to show new data immediately
+            st.rerun()
 
     # --- Main Page ---
     st.title("💰 Investment Tracker & Simulator")
@@ -166,21 +187,41 @@ def main():
 
     st.caption(f"Założenia: Wzrost {annual_return}% rocznie, dopłaty {monthly_contrib} zł miesięcznie.")
     
-    f_dates, f_values = calculate_forecast(total_value, years=20, annual_return=annual_return/100, monthly_contribution=monthly_contrib)
+    f_dates, f_total, f_invested = calculate_forecast(total_value, total_invested, years=20, annual_return=annual_return/100, monthly_contribution=monthly_contrib)
+    
+    # Calculate Interest (Top Layer)
+    # We want to stack: Bottom = Invested, Top = Interest.
+    # Stacked Total = Invested + Interest = Total Value.
+    # So Interest = Total - Invested.
+    f_interest = [t - i for t, i in zip(f_total, f_invested)]
     
     # Plotly Chart
     fig = go.Figure()
+    
+    # 1. Invested Capital (Bottom Layer)
     fig.add_trace(go.Scatter(
         x=f_dates, 
-        y=f_values, 
+        y=f_invested, 
         mode='lines', 
-        name='Prognoza',
-        line=dict(color='#00CC96', width=3),
-        fill='tozeroy' # Area chart look
+        name='Wpłaty Własne',
+        stackgroup='one', # Enable stacking
+        line=dict(width=0, color='gray'), # No line width for area look, or keep it. Let's use gray.
+        fillcolor='rgba(128, 128, 128, 0.5)' # Semi-transparent gray
+    ))
+    
+    # 2. Interest (Top Layer)
+    fig.add_trace(go.Scatter(
+        x=f_dates, 
+        y=f_interest, 
+        mode='lines', 
+        name='Odsetki',
+        stackgroup='one',
+        line=dict(width=0, color='green'),
+        fillcolor='rgba(0, 204, 150, 0.6)' # Semi-transparent green
     ))
     
     fig.update_layout(
-        title="Prognoza wartości portfela",
+        title="Prognoza wartości portfela (Wpłaty vs Odsetki)",
         xaxis_title="Rok",
         yaxis_title="Wartość (PLN)",
         hovermode="x unified",
